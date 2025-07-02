@@ -1,0 +1,194 @@
+---
+- name: Provision VRF and VXLAN networks in Apstra
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - vars/apstra_vars.yml
+  
+  tasks:
+    - name: Authenticate to REST API and retrieve token
+      ansible.builtin.uri:
+        url: "https://{{ apstra_address }}/api/aaa/login"
+        method: POST
+        body_format: json
+        body:
+          username: "{{ apstra_username }}"
+          password: "{{ apstra_password }}"
+        validate_certs: "{{ validate_certs }}"
+        return_content: true
+        status_code: 201
+      register: login_response
+
+    - name: Parse token from response
+      set_fact:
+        rest_api_token: "{{ login_response.json.token }}"
+
+    - name: Create routing zone (VRF)
+      ansible.builtin.uri:
+        url: "https://{{ apstra_address }}/api/blueprints/{{ blueprint_id }}/security-zones"
+        method: POST
+        headers:
+          Content-Type: application/json
+          Accept: application/json
+          AUTHTOKEN: "{{ rest_api_token }}"
+        body_format: json
+        body:
+          vrf_name: "{{ routing_zone_name }}"
+          sz_type: "evpn"
+          label: "{{ routing_zone_name }}"
+        validate_certs: "{{ validate_certs }}"
+        return_content: true
+        status_code: 201
+      register: vrf_creation
+
+    - name: Store VRF ID
+      set_fact:
+        vrf_id: "{{ vrf_creation.json.id }}"
+
+    - name: Display created VRF details
+      debug:
+        msg: "Created VRF {{ routing_zone_name }} with ID: {{ vrf_id }}"
+
+    - name: Add IPv4 pool to routing zone
+      ansible.builtin.uri:
+        url: "https://{{ apstra_address }}/api/blueprints/{{ blueprint_id }}/resource_groups/ip/sz:{{ vrf_id }}%2Cleaf_loopback_ips"
+        method: PUT
+        headers:
+          Content-Type: application/json
+          Accept: application/json
+          AUTHTOKEN: "{{ rest_api_token }}"
+        body_format: json
+        body:
+          pool_ids:
+            - "{{ ip_pool_id_v4 }}"
+        validate_certs: "{{ validate_certs }}"
+        return_content: true
+        status_code: 202
+      when: ip_pool_id_v4 is defined
+
+    - name: Add IPv6 pool to routing zone
+      ansible.builtin.uri:
+        url: "https://{{ apstra_address }}/api/blueprints/{{ blueprint_id }}/resource_groups/ipv6/sz:{{ vrf_id }}%2Cleaf_loopback_ips_ipv6"
+        method: PUT
+        headers:
+          Content-Type: application/json
+          Accept: application/json
+          AUTHTOKEN: "{{ rest_api_token }}"
+        body_format: json
+        body:
+          pool_ids:
+            - "{{ ip_pool_id_v6 }}"
+        validate_certs: "{{ validate_certs }}"
+        return_content: true
+        status_code: 202
+      when: ip_pool_id_v6 is defined
+
+    - name: Check VRF VNI pool assignment
+      ansible.builtin.uri:
+        url: "https://{{ apstra_address }}/api/blueprints/{{ blueprint_id }}/resource_groups/vni/evpn_l3_vnis"
+        method: GET
+        headers:
+          Content-Type: application/json
+          Accept: application/json
+          AUTHTOKEN: "{{ rest_api_token }}"
+        validate_certs: "{{ validate_certs }}"
+        return_content: true
+        status_code: 200
+      register: vrf_vni_pool
+
+    - name: Assign VNI pool to VRF if not already assigned
+      ansible.builtin.uri:
+        url: "https://{{ apstra_address }}/api/blueprints/{{ blueprint_id }}/resource_groups/vni/evpn_l3_vnis"
+        method: PUT
+        headers:
+          Content-Type: application/json
+          Accept: application/json
+          AUTHTOKEN: "{{ rest_api_token }}"
+        body_format: json
+        body:
+          pool_ids:
+            - "{{ vni_pool_id }}"
+        validate_certs: "{{ validate_certs }}"
+        return_content: true
+        status_code: 202
+      when: 
+        - vni_pool_id is defined
+        - vrf_vni_pool.json.pool_ids | length == 0
+
+    - name: Get all leaf nodes for VXLAN binding
+      ansible.builtin.uri:
+        url: "https://{{ apstra_address }}/api/blueprints/{{ blueprint_id }}/qe"
+        method: POST
+        headers:
+          Content-Type: application/json
+          Accept: application/json
+          AUTHTOKEN: "{{ rest_api_token }}"
+        body_format: json
+        body:
+          query: "match(node('system', name='leaf', role='leaf', system_type='switch'))"
+        validate_certs: "{{ validate_certs }}"
+        return_content: true
+        status_code: 200
+      register: leaf_nodes_query
+
+    - name: Extract leaf node IDs
+      set_fact:
+        leaf_node_ids: []
+
+    - name: Build leaf node IDs list
+      set_fact:
+        leaf_node_ids: "{{ leaf_node_ids + [item.leaf.id] }}"
+      loop: "{{ leaf_nodes_query['json']['items'] }}"
+
+    - name: Create bound_to structure for VXLAN networks
+      set_fact:
+        bound_to: []
+
+    - name: Build bound_to structure
+      set_fact:
+        bound_to: "{{ bound_to + [{'system_id': item}] }}"
+      loop: "{{ leaf_node_ids }}"
+
+    - name: Create VXLAN overlay networks
+      ansible.builtin.uri:
+        url: "https://{{ apstra_address }}/api/blueprints/{{ blueprint_id }}/virtual-networks"
+        method: POST
+        headers:
+          Content-Type: application/json
+          Accept: application/json
+          AUTHTOKEN: "{{ rest_api_token }}"
+        body_format: json
+        body:
+          virtual_gateway_ipv4_enabled: "{{ item.ipv4_enabled | default(false) | bool }}"
+          vn_id: "{{ item.vn_id | default(omit) }}"
+          vn_type: vxlan
+          virtual_gateway_ipv4: "{{ item.virtual_gateway_ipv4 | default(omit) }}"
+          bound_to: "{{ bound_to }}"
+          ipv4_subnet: "{{ item.ipv4_subnet | default(omit) }}"
+          label: "{{ item.virtual_network_name }}"
+          ipv4_enabled: "{{ item.ipv4_enabled | default(false) | bool }}"
+          create_policy_untagged: "{{ item.create_ct_policy | default(false) | bool }}"
+          security_zone_id: "{{ vrf_id }}"
+          dhcp_service: "dhcpServiceDisabled"
+          create_policy_tagged: "{{ item.create_ct_policy | default(false) | bool }}"
+        validate_certs: "{{ validate_certs }}"
+        return_content: true
+        status_code: 201
+      loop: "{{ virtual_networks }}"
+      register: vxlan_creation_results
+
+    - name: Display created VXLAN networks
+      debug:
+        msg: "Created VXLAN network: {{ item.item.virtual_network_name }} with ID: {{ item.json.id }}"
+      loop: "{{ vxlan_creation_results.results }}"
+
+    - name: Summary of provisioned resources
+      debug:
+        msg: |
+          Provisioning completed successfully:
+          - VRF: {{ routing_zone_name }} (ID: {{ vrf_id }})
+          - VXLAN Networks: {{ virtual_networks | map(attribute='virtual_network_name') | join(', ') }}
+          - Blueprint: {{ blueprint_id }}
+          
+          Please review the changes in Apstra at:
+          https://{{ apstra_address }}/#/blueprints/{{ blueprint_id }}/uncommitted

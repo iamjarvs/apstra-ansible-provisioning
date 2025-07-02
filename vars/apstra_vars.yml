@@ -1,0 +1,41 @@
+# vars/apstra_vars.yml
+---
+# Apstra connection details
+apstra_address: "apstra-4ede4ff6-25f9-4cba-b77c-feb6d3b950a1.aws.apstra.com"
+apstra_username: "admin"
+apstra_password: "WieldyWhale3$"
+validate_certs: false
+
+# Blueprint configuration
+blueprint_id: "evpn-vex-virtual"
+
+# VRF/Security Zone configuration
+routing_zone_name: "_Ansible_VRF"
+
+# Resource pools (optional - only include if you want to assign specific pools)
+ip_pool_id_v4: "Private-192_168_0_0-16"
+ip_pool_id_v6: "Private-fc01-a05-fab-48"
+vni_pool_id: "Default-10000-20000"
+
+# VXLAN virtual networks configuration
+virtual_networks:
+  - virtual_network_name: "_Ansible_VXLAN_100_WEB"
+    vn_id: 19000
+    ipv4_enabled: true
+    ipv4_subnet: "10.100.1.0/24"
+    virtual_gateway_ipv4: "10.100.1.1"
+    create_ct_policy: false
+    
+  - virtual_network_name: "_Ansible_VXLAN_200_APP"
+    vn_id: 20000
+    ipv4_enabled: true
+    ipv4_subnet: "10.100.2.0/24"
+    virtual_gateway_ipv4: "10.100.2.1"
+    create_ct_policy: false
+    
+  - virtual_network_name: "_Ansible_VXLAN_300_DB"
+    vn_id: 21000
+    ipv4_enabled: true
+    ipv4_subnet: "10.100.3.0/24"
+    virtual_gateway_ipv4: "10.100.3.1"
+    create_ct_policy: false
